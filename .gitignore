@@ -1,23 +1,7 @@
-# Cookies / credentials — never commit, not even as a sample
+# Cookies / credentials — never commit, not even a sample
 *cookies*
-.env
-.env.local
-.env.*.local
 
-# OS / editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
+# Obsidian plugin data — this is where pasted cookies.txt content gets
+# persisted if the plugin is ever tested inside a local vault under this repo
+data.json
+.hotr

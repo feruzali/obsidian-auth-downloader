@@ -1,64 +1,69 @@
-# AGENTS.md — `localize_images_auth.py`
+# AGENTS.md — Attachment Auth Downloader
 
-Reference for an AI agent asked to run, debug, or modify this script.
+Reference for an AI agent asked to run, debug, or modify this Obsidian plugin.
 Rename to `CLAUDE.md` if your tooling prefers that filename.
 
 ---
 
 ## 1. Purpose and scope
 
-Single-file Python CLI. Scans Obsidian markdown notes for **remote image
-references**, downloads each one using **browser-derived cookie credentials**,
-writes it into the vault, and rewrites the note to point at the local copy.
+Obsidian plugin, single source file (`main.ts`, bundled to `main.js` via
+esbuild). Scans vault notes for **remote image references**, downloads each
+one using **cookie credentials pasted into settings**, writes it into the
+vault as an attachment, and rewrites the note to point at the local copy.
 
-It exists because Obsidian's built-in "Download attachments" command and the
+It exists because Obsidian's built-in "Download attachments" command and
 community plugins in this space (`obsidian-attachment-download`,
-`obsidian-attachmenter`) issue anonymous HTTP requests through Obsidian's
-`requestUrl`, which does not share a cookie jar with any browser. They cannot
-fetch images behind a session. This script can.
+`obsidian-attachmenter`) issue anonymous requests via `requestUrl`, which
+carries no session cookies. They cannot fetch images sitting behind a login —
+this plugin can, because you supply the session cookies yourself.
 
 **In scope:** `http(s)` image URLs in markdown embeds and `<img>` tags.
 **Out of scope:** `data:` URIs, `file://` paths, non-image attachments,
-attachment reorganization/renaming after the fact, orphan cleanup.
+attachment reorganization/renaming after the fact, orphan cleanup, browser
+cookie-store access (see §9).
 
-Runs on the user's own machine — it needs filesystem access to their vault and
-network access to arbitrary hosts, so it cannot be executed in a sandbox.
+`isDesktopOnly: true` in `manifest.json` — the plugin uses Node's `crypto`
+(`createHash`) and `path` (`posix`) modules, unavailable on mobile.
 
 ---
 
-## 2. Dependencies
+## 2. Build
 
-| Package | Required | Purpose |
-|---|---|---|
-| `requests` | yes | HTTP + cookie jar |
-| `browser-cookie3` | only for `--from-browser` | reads live browser cookie DBs |
+```bash
+npm install
+npm run build     # node esbuild.config.mjs -> bundles main.ts to main.js
+```
 
-Import of `browser_cookie3` is deferred into `cookies_from_browser()` so the
-script runs without it when using `--cookies-file` or `--cookie`.
+`esbuild.config.mjs` marks `obsidian`, `electron`, and the CodeMirror/@lezer
+packages as `external` — they're provided by the Obsidian runtime, not
+bundled. `main.js` is a generated artifact (gitignored); never hand-edit it,
+edit `main.ts` and rebuild.
 
 ---
 
 ## 3. Execution pipeline
 
-Strictly ordered. Each stage gates the next.
+Entry point is `AttachmentAuthDownloaderPlugin.onload()`, which registers four
+commands and a settings tab. Each download command calls `runDownload(scope)`:
 
 ```
-main()
- ├─ resolve target → notes list, inject args.vault_root into the Namespace
- ├─ make_session(args)          build Session + RequestsCookieJar
- ├─ describe_jar()              print domains + cookie NAMES (never values)
- ├─ preflight()                 fetch exactly ONE image; abort run on failure
- └─ for note in notes:
-      process_note()
-        ├─ find_image_urls()    ordered, deduped
-        ├─ per URL: domain filter → signed-URL filter → fetch() → classify()
-        ├─ target_filename() → write bytes → link_for() → rewrite()
-        └─ write note back only if text changed and not dry_run
+runDownload(scope, folderPath?)
+ ├─ parseCookiesTxt(settings.cookiesText)   -> CookieEntry[]
+ ├─ collectFiles(app, scope, folderPath)     -> TFile[]  (note | vault | folder)
+ ├─ preflight()                              fetch ONE image; abort run on failure
+ │                                           (skipped if settings.skipPreflight)
+ └─ for file of files:
+      processNote(app, file, settings, cookies, stats, consecutive, log, dryRun)
+        ├─ findImageUrls(text)              ordered, deduped
+        ├─ per URL: domainAllowed() -> looksSigned() -> fetchImage() -> classify()
+        ├─ targetFilename() -> vault.createBinary() -> linkFor() -> rewriteText()
+        └─ vault.modify(file, text) only if text changed and not dryRun
+      -> writeLog()  always, win or lose
 ```
 
-`args.vault_root` is **not** a CLI flag. It is assigned inside `main()` and read
-by `process_note()` and `preflight()`. Any refactor that calls those functions
-directly must set it.
+`testCredentials()` is a thin wrapper that runs `preflight()` alone, for
+verifying cookies without touching any notes.
 
 ---
 
@@ -68,106 +73,99 @@ directly must set it.
 
 | Function | Contract |
 |---|---|
-| `cookies_from_browser(browser, domain=None)` | Returns a `CookieJar`. `sys.exit`s with a diagnostic on unknown browser name, missing `browser_cookie3`, or decryption/lock failure. `domain` filters at load time. |
-| `jar_from_header(raw, domain)` | Parses `"a=b; c=d"` into a domain-scoped jar. **`sys.exit`s if `domain` is falsy** — this is the guard that prevents a raw header being broadcast to every host. Do not relax it. |
-| `describe_jar(jar)` | `{domain: [cookie_name, ...]}`. Names only, by design. |
-| `make_session(args)` | Merges all three cookie sources into one `RequestsCookieJar`, then applies `--bearer` and `--header`. Returns `requests.Session`. Sole place credentials are attached. |
+| `parseCookiesTxt(raw)` | Parses a Netscape `cookies.txt` export (handles the `#HttpOnly_` prefix some export extensions add) into `CookieEntry[]`. No OS keyring access — there is no browser-read equivalent to the old Python script's `--from-browser`. |
+| `cookiesForUrl(cookies, url)` | Filters to cookies whose domain matches the URL's hostname (exact or suffix match on `.domain`). |
+| `cookieHeaderForUrl(cookies, url)` | Joins matching cookies into a `"name=value; ..."` header, scoped per-request. |
+| `describeCookies(cookies)` | `{domain: [cookie_name, ...]}` for the settings-tab status line and the run log. Names only, never values, in the log — but see §8 for where values *do* end up. |
 
 ### Fetch and classify
 
 | Function | Contract |
 |---|---|
-| `note_source_url(text)` | Extracts `source:` from YAML frontmatter (Obsidian Web Clipper writes it). Returns `str \| None`. Used as `Referer`. |
-| `find_image_urls(text)` | Ordered, deduplicated `list[str]`. Markdown embeds first, then `<img>` tags. |
-| `looks_signed(url)` | Inspects **query string only** for expiring-signature markers. |
-| `classify(response, body, min_bytes)` | `(bool, str)`. **On success the second element is the content-type**, not a message. See §7. |
-| `fetch(session, url, referer, args)` | `(ok, reason, body, response)`. Follows redirects. Raises `requests.RequestException` on transport failure — callers must catch. |
+| `noteSourceUrl(app, file, text)` | Reads `source:` from frontmatter via `metadataCache` first, falls back to a regex scan of the raw frontmatter block. Used as `Referer`. |
+| `findImageUrls(text)` | Ordered, deduplicated `string[]`. Markdown embeds first, then `<img>` tags. |
+| `looksSigned(url)` | Inspects **query string only** for expiring-signature markers. |
+| `classify(status, headers, buf, minBytes)` | `{ok, reason}`. On success `reason` is the content-type, not a message — mirrors the Python script's overloaded return, see §7. |
+| `fetchImage(url, cookieHeader, referer, userAgent, timeoutMs)` | Wraps `requestUrl({throw: false})` in a manual `withTimeout()`, since `requestUrl` has no native timeout. Returns `{status, headers, buf}`. |
 
 ### Filesystem and rewriting
 
 | Function | Contract |
 |---|---|
-| `target_filename(url, content_type, prefix)` | `{prefix}{slug}-{sha1(url)[:8]}{ext}`. Deterministic in `url`, which is what makes re-runs idempotent. Extension from URL path, falling back to content-type, defaulting `.png`. |
-| `link_for(note_path, asset_path, wikilinks)` | Relative markdown link (URL-encoded) or `![[name]]` wikilink. Relative path computed from the note's own directory, not the vault root. |
-| `rewrite(text, url, replacement)` | Replaces only embeds whose URL is **exactly equal** to `url`. Two passes: markdown via lambda equality check, `<img>` via a regex built with `re.escape(url)` that consumes the whole tag. Plain (non-embed) links are left alone. |
-| `preflight(session, notes, args)` | `bool`. Fetches the first eligible image across all notes. Reports which cookies match that host. Returns `False` if no eligible URLs exist at all. |
-| `process_note(note_path, session, args, stats, consecutive)` | Mutates `stats` and `consecutive` in place. May raise `SystemExit`. |
+| `targetFilename(url, contentType, prefix)` | `{prefix}{stem}-{sha1(url).slice(0,8)}{ext}`. Deterministic in `url` — re-runs are idempotent. Extension from the URL path if recognized, else derived from content-type, else `.png`. |
+| `linkFor(notePath, assetPath, style)` | `"relative"` -> URL-encoded relative markdown link computed via `posix.relative` from the note's own directory; `"wikilink"` -> `![[name]]`. |
+| `rewriteText(text, url, replacement)` | Replaces only embeds whose URL is **exactly equal** to `url` — one pass for markdown embeds (equality check inside the replacer), one regex pass (`re.escape`-equivalent) for `<img>` tags. Non-embed links are left alone. |
+| `ensureFolder(app, folderPath)` | Creates the attachments folder path segment-by-segment if missing; throws if a path segment exists and isn't a folder. |
+| `preflight(app, files, settings, cookies, log)` | `Promise<boolean>`. Fetches the first eligible image across all files, logs which cookies matched that host. `false` if none eligible or the fetch fails. |
+| `processNote(...)` | Mutates `stats` and `consecutive` in place; may throw `AuthAbort`. |
 
 ---
 
 ## 5. Mutable state
 
-```python
-stats = {"downloaded": int, "failed": int, "skipped": int,
-         "signed": int, "reasons": Counter()}   # reasons counts failures only
-
-consecutive = [0]   # one-element list used as a mutable box, so the counter
-                    # survives across process_note() calls
+```ts
+stats = { downloaded, failed, skipped, signed, reasons: Map<string, number> }
+consecutive = { n: number }   // object box so the counter survives across
+                               // processNote() calls in the runDownload loop
 ```
 
-`consecutive[0]` increments only on `401`/`403`. Any success resets it to `0`.
-At `>= args.max_auth_failures` the script raises `SystemExit` — this is the
-mid-run session-expiry abort, and `main()`'s per-note `except` deliberately
-re-raises `SystemExit` before the generic handler.
+`consecutive.n` increments only on a reason containing `"rejected or expired"`
+(401/403). Any success resets it to `0`. At `>= settings.maxAuthFailures` a
+`AuthAbort` is thrown — caught in `runDownload()`'s loop, which logs the
+message, sets `aborted = true`, and breaks (does not re-throw past the loop).
 
 ---
 
 ## 6. Invariants — preserve these when editing
 
-1. **Cookie values are never printed or logged.** Only domains and names.
-2. **No filesystem write occurs before `preflight()` returns `True`** (unless
-   `--skip-preflight`).
-3. **Non-image bytes are never written.** `classify()` is the only gate; do not
+1. **No filesystem write occurs before `preflight()` returns `true`** (unless
+   `settings.skipPreflight` is on).
+2. **Non-image bytes are never written.** `classify()` is the only gate; don't
    bypass it.
-4. **Re-runs are idempotent.** Same URL → same filename; `dest.exists()` skips
-   the write; already-rewritten links no longer match `MD_IMG` because they are
-   no longer `https?://`. A run interrupted halfway can be resumed by re-running.
-5. **Raw `--cookie` is never sent without an explicit `--cookie-domain`.**
-6. **Notes are only written when their text actually changed.**
-7. **Requests are sequential.** `--delay` between them. Not an accident.
+3. **Re-runs are idempotent.** Same URL -> same filename; `getAbstractFileByPath()`
+   check skips re-download; already-rewritten links no longer match `MD_IMG`/
+   `HTML_IMG` because they're no longer `https?://`.
+4. **Raw cookie values never appear in the log note** (`Attachment Auth
+   Downloader Log.md`) — only domains and cookie *names* via `describeCookies()`.
+   Do not add a debug path that logs `cookieHeaderForUrl()`'s output.
+5. **Notes are only written when their text actually changed** (`text !== original`).
+6. **Requests are sequential**, throttled by `settings.delayMs`. Not an accident —
+   avoid switching to `Promise.all()` without re-adding per-host rate limiting.
 
 ---
 
 ## 7. Known warts
 
-**`classify()` overloads its return value.** On success it returns
-`(True, content_type)`; on failure `(False, human_message)`. `process_note()`
-then passes that same variable into `target_filename()` as `content_type`:
+**`classify()` overloads its return value**, same as the original Python
+script it was ported from: on success `reason` is the content-type, not a
+message, and `processNote()` passes that value straight into
+`targetFilename()`. If you change what `classify()` returns on success, fix
+that call site or every downloaded file falls back to the `.png` extension.
 
-```python
-ok, reason, body, resp = fetch(...)
-...
-name = target_filename(url, reason, args.prefix)   # `reason` IS the content-type here
-```
-
-This works but is fragile. If you change `classify()`'s success return, fix
-this call site or every downloaded file gets the `.png` fallback extension.
-
-**Unused imports.** `Cookie`, `CookieJar` from `http.cookiejar` are imported but
-unused after a refactor. Harmless.
-
-**`stats["reasons"]` keys** are the text before `—` in the failure message, so
-message rewording changes the summary grouping.
+**`stats.reasons` keys** are the text before `—` in the failure message, so
+rewording a failure message changes how the run-summary groups it.
 
 ---
 
-## 8. Failure taxonomy
+## 8. Known warts specific to the port (read before touching credentials code)
 
-What each reported failure means, and the correct remedy:
+**Cookies are stored in plaintext in this plugin's `data.json`**, inside
+`.obsidian/plugins/attachment-auth-downloader/` in the vault, via
+`saveData()`. This is a real behavior change from the Python script, which
+never persisted cookies to disk itself (they came fresh from the browser or a
+file the user pointed at each run). Anything with filesystem access to the
+vault — other plugins, a sync client, a backup tool — can read `data.json`.
+This is documented in the README's Security notes section; don't remove that
+warning, and don't add a feature that copies `cookiesText` anywhere else
+(clipboard, another note, console) without equally prominent warning.
 
-| Message | Cause | Remedy |
-|---|---|---|
-| `HTTP 401/403 — cookies rejected or expired` | No valid session for that host | Refresh cookies; verify the jar covers the **image host**, not just the article host |
-| `HTTP 200 but served a login page` | Server returns HTML instead of 401 | Same as above; this is the silent-corruption case the classifier exists to catch |
-| `HTTP 404 — gone from the server` | Resource deleted upstream | Unrecoverable |
-| `skip (expiring signed URL, needs re-clipping)` | Presigned S3/GCS/SAS URL, already expired | **Unrecoverable by any script.** Revisit the page and re-clip |
-| `suspiciously small (N bytes)` | Placeholder/tracking pixel, or truncated response | Lower `--min-bytes` if legitimate |
-| `unexpected content-type: X` | Server sent something else | Investigate manually |
-| `cookies that will be sent: NONE` (preflight) | Cookie domain scope mismatch | Most common real cause — images often live on a CDN subdomain the session cookie isn't scoped to |
-
-**Diagnostic priority:** if the user reports total failure, check the preflight
-cookie-match line first. Domain scoping accounts for more failures than
-expiry does.
+**No OS keyring / browser cookie-store access.** The Python original's
+`--from-browser` read Chrome/Firefox/Edge's encrypted cookie DB directly.
+Obsidian plugins run in a sandboxed renderer with no such access — cookies
+must be exported to a file and pasted/attached once. If a request author asks
+for "read cookies from my browser automatically," that's not implementable
+here without a native companion process; say so rather than half-implementing
+it.
 
 ---
 
@@ -175,16 +173,17 @@ expiry does.
 
 | Requested change | Touch |
 |---|---|
-| Different auth scheme (OAuth, mTLS, API key) | `make_session()` only |
-| Support `data:` / `file://` sources | `find_image_urls()` + a branch before `fetch()` in `process_note()` |
+| Different auth scheme (OAuth, bearer token, custom header) | Add a settings field + thread it through `fetchImage()`'s `headers` object |
+| Support `data:` / `file://` sources | `findImageUrls()` + a branch before `fetchImage()` in `processNote()` |
 | Non-image attachments (PDF, video) | `EXT_BY_TYPE`, the `image/` check in `classify()`, and `MD_IMG` (needs `!?\[` to catch non-embed links) |
-| Match `obsidian-attachment-management` folder/name templates | `target_filename()` + the `attachments` path computation in `process_note()`; mirror `{root}/{path}/{name}` with `${notename}` etc. |
-| Concurrency | The URL loop in `process_note()`. Must keep per-host rate limiting, and `consecutive[0]` needs a lock or a rethink |
-| Progress persistence across runs | Not needed — idempotency (§6.4) already gives resume semantics |
-| Per-note credentials | Thread a domain→jar map through `fetch()`; `make_session()` currently builds one global jar |
+| Concurrency | The URL loop in `processNote()`. Must keep per-host rate limiting, and `consecutive.n` needs a rethink if parallelized |
+| Progress persistence across runs | Not needed — idempotency (§6.3) already gives resume semantics |
+| Per-note credentials | Thread a domain->cookie-list map through instead of one global `cookies` array |
+| Encrypt stored cookies | Would need a passphrase prompt each session, since Obsidian's `saveData()` has no built-in encryption — significant UX change, discuss before implementing |
 
-**Do not** add a flag that writes files before preflight, or that prints cookie
-values for debugging. Both defeat the script's purpose.
+**Do not** add a flag that writes files before preflight, or that prints/logs
+cookie values anywhere (log note, console, `Notice`). Both defeat the point of
+the preflight and the "names only" logging invariant.
 
 ---
 
@@ -197,35 +196,18 @@ values for debugging. Both defeat the script's purpose.
 - Reference-style links (`![alt][ref]` with a separate definition block)
 - Embeds inside fenced code blocks — these are matched and rewritten, which is
   arguably wrong. If a user reports code samples being mangled, add a
-  fence-stripping pre-pass before `find_image_urls()`.
+  fence-stripping pre-pass before `findImageUrls()`.
 
-`HTML_IMG` matches the opening tag only; `rewrite()` uses a second, wider regex
-to consume the full element including any trailing attributes and `/>`.
+`HTML_IMG` matches the opening tag only; `rewriteText()` uses a second, wider
+regex to consume the full element including trailing attributes and `/>`.
 
 ---
 
-## 11. Invocation reference
+## 11. Settings reference
 
-```bash
-# Verify credentials, write nothing
-python localize_images_auth.py ~/vault --from-browser firefox --dry-run
+See `main.ts`'s `PluginSettings` interface and `DEFAULT_SETTINGS` for the
+full, current list — this is the single source of truth and will drift from
+any copy pasted here. The README's "Settings reference" table is kept
+human-readable in sync with it; update both when adding a setting.
 
-# Real run
-python localize_images_auth.py ~/vault --from-browser chrome --backup
-
-# Scoped raw header
-python localize_images_auth.py ~/vault \
-  --cookie "session=..." --cookie-domain cdn.example.com
-
-# Single note, wikilink output, restricted to one host
-python localize_images_auth.py ~/vault/Clippings/a.md \
-  --cookies-file ~/c.txt --wikilinks --domain cdn.example.com
-```
-
-Exit codes: `0` success (including "some downloads failed"); `1` for
-credential/preflight/argument errors and the consecutive-auth-failure abort.
-A non-zero exit never means the vault is half-written in an inconsistent
-state — §6.4 covers that.
-
-**Operational note for agents:** always propose `--dry-run` first, and
-`--backup` on the first real run. The script edits notes in place.
+**Operational note for agents

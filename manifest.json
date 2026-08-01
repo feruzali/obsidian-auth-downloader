@@ -1,0 +1,10 @@
+{
+  "id": "attachment-auth-downloader",
+  "name": "Attachment Auth Downloader",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Download auth-gated remote images referenced in notes (e.g. Cisco Tech Zone clippings) using pasted cookies.txt credentials, and rewrite links to point at local attachments.",
+  "author": "Feruz",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}
