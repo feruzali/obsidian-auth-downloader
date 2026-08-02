@@ -4,4 +4,20 @@
 # Obsidian plugin data — this is where pasted cookies.txt content gets
 # persisted if the plugin is ever tested inside a local vault under this repo
 data.json
-.hotr
+.hotreload
+
+# Build output
+node_modules/
+main.js
+*.js.map
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log

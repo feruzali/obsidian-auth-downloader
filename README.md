@@ -65,4 +65,15 @@ Every run (dry or real) writes its log to a note called `Attachment Auth Downloa
 
 ## How it works
 
-Before touching the vault, `preflight()` fetches exactly one eligible ima
+Before touching the vault, `preflight()` fetches exactly one eligible image and reports which cookies matched that host. If it fails, nothing is written (unless "Skip preflight" is on). During a real run, `classify()` distinguishes an actual image from an HTML login page (a 200 response that's secretly a sign-in redirect), so a corrupted/mistaken "download" never gets written as if it succeeded. Re-runs are idempotent — the same URL always maps to the same filename via a hash, so `dest.exists()` skips re-downloading and already-rewritten links no longer match the image patterns.
+
+## Security notes
+
+- Cookies you attach/paste are stored in this plugin's `data.json` inside `.obsidian/plugins/attachment-auth-downloader/` in your vault — **not** encrypted, and readable by anything with filesystem access to the vault (including any other plugin, and any sync tool pointed at the vault). Treat a live session cookie like a password: it can be used to impersonate you on that site until it expires or you sign out elsewhere.
+- Any file with `cookies` in its name is gitignored in this repo, no exceptions — never commit a real `cookies.txt` export, even as a "sample."
+- If you ever suspect a cookie leaked (e.g. `data.json` got synced somewhere it shouldn't have, or committed by mistake), rotate it by signing out of that site everywhere — deleting the file later does not erase it from any git history it was committed to.
+- The domain filter and per-host cookie matching mean credentials for one site are never sent to a different host, even if both appear in the same `cookies.txt`.
+
+## Known limitation vs. the original design
+
+Obsidian plugins can't decrypt a browser's encrypted cookie store the way a desktop script with OS keyring access can — there's no `--from-browser` equivalent here. You export `cookies.txt` once and refresh it when the session expires.

@@ -210,4 +210,6 @@ full, current list — this is the single source of truth and will drift from
 any copy pasted here. The README's "Settings reference" table is kept
 human-readable in sync with it; update both when adding a setting.
 
-**Operational note for agents
+**Operational note for agents:** the "Dry run" setting defaults to `true`.
+Always propose leaving it on for the first pass, and enabling ".bak backups"
+before the first real (non-dry) run. The plugin edits notes in place.
