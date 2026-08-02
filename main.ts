@@ -766,6 +766,8 @@ export default class AttachmentAuthDownloaderPlugin extends Plugin {
 // ------------------------------------------------------------ settings ui --
 
 class AttachmentAuthDownloaderSettingTab extends PluginSettingTab {
+	private cookieFileInputEl!: HTMLInputElement;
+
 	constructor(app: App, private plugin: AttachmentAuthDownloaderPlugin) {
 		super(app, plugin);
 	}
@@ -774,6 +776,23 @@ class AttachmentAuthDownloaderSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 		containerEl.createEl("h2", { text: "Attachment Auth Downloader" });
+
+		// Created once per render and kept in the settings pane itself (not
+		// document.body) for the lifetime of this tab, so the button's click
+		// handler always has a live, attached element to trigger.
+		this.cookieFileInputEl = containerEl.createEl("input", { type: "file" });
+		this.cookieFileInputEl.accept = ".txt,text/plain";
+		this.cookieFileInputEl.style.display = "none";
+		this.cookieFileInputEl.addEventListener("change", async () => {
+			const file = this.cookieFileInputEl.files?.[0];
+			if (!file) return;
+			const text = await file.text();
+			this.plugin.settings.cookiesText = text;
+			await this.plugin.saveSettings();
+			const n = parseCookiesTxt(text).length;
+			new Notice(`Loaded ${file.name}: ${n} cookie(s).`);
+			this.display();
+		});
 
 		const cookieCount = parseCookiesTxt(this.plugin.settings.cookiesText).length;
 		const cookieStatus = cookieCount
@@ -790,23 +809,14 @@ class AttachmentAuthDownloaderSettingTab extends PluginSettingTab {
 				btn
 					.setButtonText(this.plugin.settings.cookiesText ? "Replace file…" : "Attach file…")
 					.onClick(() => {
-						const input = document.createElement("input");
-						input.type = "file";
-						input.accept = ".txt,text/plain";
-						input.style.display = "none";
-						input.addEventListener("change", async () => {
-							const file = input.files?.[0];
-							if (!file) return;
-							const text = await file.text();
-							this.plugin.settings.cookiesText = text;
-							await this.plugin.saveSettings();
-							const n = parseCookiesTxt(text).length;
-							new Notice(`Loaded ${file.name}: ${n} cookie(s).`);
-							this.display();
-						});
-						document.body.appendChild(input);
-						input.click();
-						input.remove();
+						new Notice("Opening file picker…");
+						// A persistent input that lives in the settings pane for as
+						// long as this tab is open, instead of one created and
+						// discarded per click — some Electron/Obsidian renderer
+						// contexts don't reliably deliver the native dialog's
+						// change event to an element that was created fresh and
+						// appended to document.body just before .click().
+						this.cookieFileInputEl.click();
 					})
 			)
 			.addExtraButton((btn) =>
@@ -987,18 +997,4 @@ class AttachmentAuthDownloaderSettingTab extends PluginSettingTab {
 			.addToggle((t) =>
 				t.setValue(this.plugin.settings.dryRun).onChange(async (v) => {
 					this.plugin.settings.dryRun = v;
-					await this.plugin.saveSettings();
-				})
-			);
-
-		new Setting(containerEl)
-			.setName("Skip preflight")
-			.setDesc("Skip the single-image credential check that normally runs before a batch download.")
-			.addToggle((t) =>
-				t.setValue(this.plugin.settings.skipPreflight).onChange(async (v) => {
-					this.plugin.settings.skipPreflight = v;
-					await this.plugin.saveSettings();
-				})
-			);
-	}
-}
+					await this.plugin.saveSetti
