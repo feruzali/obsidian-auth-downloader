@@ -2,7 +2,7 @@
 
 An Obsidian plugin that scans your notes for remote image references, downloads them using **cookie credentials you supply**, saves them into your vault, and rewrites the links to point at the local copy.
 
-It exists because Obsidian's built-in "Download attachments" command and community plugins like `obsidian-attachment-download` and `obsidian-attachmenter` send anonymous requests, which can't fetch images sitting behind a login — paywalled articles, internal wikis, session-gated CDNs (e.g. Cisco Tech Zone clippings), and so on. This plugin authenticates those requests the same way your browser would.
+It exists because Obsidian's built-in "Download attachments" command and community plugins like `obsidian-attachment-download` and `obsidian-attachmenter` send anonymous requests, which can't fetch images sitting behind a login — paywalled articles, internal wikis, session-gated CDNs, and so on. This plugin authenticates those requests the same way your browser would.
 
 **In scope:** `http(s)` image URLs in markdown embeds and `<img>` tags.
 **Out of scope:** `data:` URIs, `file://` paths, non-image attachments, attachment reorganization/renaming, orphan cleanup.
@@ -30,7 +30,7 @@ npm run build      # bundles main.ts -> main.js via esbuild
 
 1. Export your session's cookies for the target site into a Netscape-format `cookies.txt` (e.g. with a "Get cookies.txt LOCALLY" browser extension) while logged in.
 2. Open Settings → Attachment Auth Downloader, and either attach that file or paste its contents into "Cookies.txt contents (advanced)".
-3. Set the attachments folder (default `ciscodocs/Clippings/attachments`) and other options as needed.
+3. Set the attachments folder (default `Clippings/attachments`) and other options as needed.
 4. Run **Test credentials (preflight only)** from the command palette to confirm the cookies work against one image before doing a real run.
 
 ## Commands

@@ -339,8 +339,8 @@ interface PluginSettings {
 
 const DEFAULT_SETTINGS: PluginSettings = {
 	cookiesText: "",
-	attachmentsFolder: "ciscodocs/Clippings/attachments",
-	defaultFolder: "ciscodocs/Clippings",
+	attachmentsFolder: "Clippings/attachments",
+	defaultFolder: "Clippings",
 	prefix: "",
 	linkStyle: "relative",
 	domainFilter: "",
@@ -802,7 +802,7 @@ class AttachmentAuthDownloaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Cookies.txt file")
 			.setDesc(
-				`${cookieStatus} Attach the cookies.txt export for the site (e.g. techzone.cisco.com), ` +
+				`${cookieStatus} Attach the cookies.txt export for the site you're downloading from, ` +
 					"exported from a browser extension. Stored locally in this vault's plugin data only."
 			)
 			.addButton((btn) =>
@@ -997,4 +997,18 @@ class AttachmentAuthDownloaderSettingTab extends PluginSettingTab {
 			.addToggle((t) =>
 				t.setValue(this.plugin.settings.dryRun).onChange(async (v) => {
 					this.plugin.settings.dryRun = v;
-					await this.plugin.saveSetti
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName("Skip preflight")
+			.setDesc("Skip the single-image credential check that normally runs before a batch download.")
+			.addToggle((t) =>
+				t.setValue(this.plugin.settings.skipPreflight).onChange(async (v) => {
+					this.plugin.settings.skipPreflight = v;
+					await this.plugin.saveSettings();
+				})
+			);
+	}
+}
